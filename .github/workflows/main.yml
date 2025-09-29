@@ -1,75 +1,95 @@
+name: Build and Deploy to Google Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+
 # Permissions are required to interact with Google Cloud resources
 permissions:
   contents: 'read'
   id-token: 'write' # Required for GCR/Artifact Registry authentication
 
-steps:
-  - name: Checkout Code
-    uses: actions/checkout@v4
+env:
+  PROJECT_ID: insightsx-473609
+  REGION: us-central1
+  REPO_NAME: insightsx-microservice
+  IMAGE_NAME: insights-microservice-img
+  SERVICE_NAME: insights-users-api
 
-  # --- 0. SECURELY CREATE CONFIGURATION FILE ---
-  # This step uses GitHub Secrets to create the application.properties file,
-  # preventing configuration from being committed to the repo.
-  - name: Create application.properties with Database Secrets
-    run: |
-      mkdir -p src/main/resources
-      # Write the secured content to the properties file
-      cat > src/main/resources/application.properties << EOF
-      spring.application.name=InsightsApplication
-      spring.datasource.url=${{ secrets.DB_URL }}?prepareThreshold=0
-      spring.datasource.username=${{ secrets.DB_USERNAME }}
-      spring.datasource.password=${{ secrets.DB_PASSWORD }}
-      spring.datasource.driverClassName=org.postgresql.Driver
-      
-      # JPA/Hibernate Configuration
-      spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
-      spring.jpa.hibernate.ddl-auto=update
-      spring.jpa.show-sql=true
-      
-      # Cloud Run mandatory setting
-      server.port=8080
-      EOF
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
 
-  # --- 1. BUILD ARTIFACT (Maven Build) ---
-  - name: Set up Java Development Kit (JDK 17)
-    uses: actions/setup-java@v4
-    with:
-      java-version: '17'
-      distribution: 'temurin'
-      cache: 'maven'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  - name: Build with Maven (Generate the .jar file)
-    # The build succeeds because the properties file now exists
-    run: ./mvnw clean install -DskipTests
+      # --- 0. SECURELY CREATE CONFIGURATION FILE ---
+      # This step uses GitHub Secrets and standard config to create the application.properties file.
+      - name: Create application.properties with Database Secrets and Config
+        run: |
+          # Ensure the directory exists
+          mkdir -p src/main/resources
+          # Write the secured content to the properties file
+          cat > src/main/resources/application.properties << EOF
+          spring.application.name=InsightsApplication
 
-  # --- 2. GOOGLE CLOUD AUTHENTICATION ---
-  - name: Authenticate to Google Cloud
-    id: auth
-    uses: google-github-actions/auth@v2
-    with:
-      # This secret holds the JSON key for a Service Account
-      credentials_json: ${{ secrets.GCP_SA_KEY }}
+          # Database Connection (Secured via GitHub Secrets)
+          # JDBC URL includes the fix for the prepared statement error (?prepareThreshold=0)
+          spring.datasource.url=${{ secrets.DB_URL }}?prepareThreshold=0
+          spring.datasource.username=${{ secrets.DB_USERNAME }}
+          spring.datasource.password=${{ secrets.DB_PASSWORD }}
+          spring.datasource.driverClassName=org.postgresql.Driver
 
-  - name: Set up Docker for Artifact Registry
-    run: gcloud auth configure-docker ${REGION}-docker.pkg.dev
+          # JPA/Hibernate Configuration
+          spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+          spring.jpa.hibernate.ddl-auto=update
+          spring.jpa.show-sql=true
+          
+          # Cloud Run mandatory setting
+          server.port=8080
+          EOF
 
-  # --- 3. DOCKER IMAGE BUILD & PUSH ---
-  - name: Build and Push Docker Image to Artifact Registry
-    run: |
-      IMAGE_PATH="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}"
-      
-      # Build the image using the artifact (.jar) and properties file created above
-      docker build --platform linux/amd64 -t $IMAGE_PATH .
+      # --- 1. BUILD ARTIFACT (Maven Build) ---
+      - name: Set up Java Development Kit (JDK 17)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
 
-      # Push the image
-      docker push $IMAGE_PATH
+      - name: Build with Maven (Generate the .jar file)
+        # The build succeeds because the properties file now exists
+        run: ./mvnw clean install -DskipTests
 
-  # --- 4. DEPLOY TO CLOUD RUN ---
-  - name: Deploy to Cloud Run
-    uses: google-github-actions/deploy-cloudrun@v2
-    with:
-      service: ${{ env.SERVICE_NAME }}
-      region: ${{ env.REGION }}
-      # Use the full image path for deployment
-      image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}
-      flags: --min-instances 0 --max-instances 1 --port 8080
+      # --- 2. GOOGLE CLOUD AUTHENTICATION ---
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # This secret holds the JSON key for a Service Account
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      # --- 3. DOCKER IMAGE BUILD & PUSH ---
+      - name: Build and Push Docker Image to Artifact Registry
+        run: |
+          IMAGE_PATH="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}"
+          
+          # Build the image using the artifact (.jar) and properties file created above
+          docker build --platform linux/amd64 -t $IMAGE_PATH .
+
+          # Push the image
+          docker push $IMAGE_PATH
+
+      # --- 4. DEPLOY TO CLOUD RUN ---
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          # Use the full image path for deployment
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}
+          flags: --min-instances 0 --max-instances 1 --port 8080
