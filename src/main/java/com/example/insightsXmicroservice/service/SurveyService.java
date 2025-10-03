@@ -7,10 +7,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -28,6 +30,9 @@ public class SurveyService {
 
     @Autowired
     private SurveyAnswerRepository surveyAnswerRepository;
+
+    @Autowired
+    private TransactionRepository transactionRepository;
 
     // Get all active surveys
     public List<SurveyResponse> getAllSurveys() {
@@ -95,9 +100,45 @@ public class SurveyService {
                 .findById(UUID.fromString(responseId))
                 .orElseThrow(() -> new RuntimeException("Survey response not found"));
 
+        // Check if already completed to avoid duplicate points
+        if ("COMPLETED".equals(response.getStatus())) {
+            System.out.println("⚠️ Survey already completed: " + responseId);
+            return;
+        }
+
+        // Update survey status
         response.setStatus("COMPLETED");
         response.setCompletedAt(LocalDateTime.now());
         userSurveyResponseRepository.save(response);
+
+        // Get survey to find reward points
+        Survey survey = surveyRepository.findById(response.getSurveyId())
+                .orElseThrow(() -> new RuntimeException("Survey not found"));
+
+        // Check if transaction already exists for this survey response
+        Optional<Transaction> existingTransaction = transactionRepository
+                .findByReferenceIdAndReferenceType(responseId, "SURVEY");
+
+        if (existingTransaction.isPresent()) {
+            System.out.println("⚠️ Transaction already exists for survey response: " + responseId);
+            return;
+        }
+
+        // Create transaction for reward points
+        Transaction transaction = new Transaction();
+        transaction.setTransactionId("txn_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 8));
+        transaction.setUserId(response.getUserId());
+        transaction.setType("CREDIT");
+        transaction.setAmount(new BigDecimal(survey.getRewardPoints()));
+        transaction.setDescription("Survey Completed: " + survey.getTitle());
+        transaction.setTimestamp(System.currentTimeMillis());
+        transaction.setStatus("SUCCESS");
+        transaction.setReferenceId(responseId);
+        transaction.setReferenceType("SURVEY");
+
+        transactionRepository.save(transaction);
+
+        System.out.println("✅ Awarded " + survey.getRewardPoints() + " points to user " + response.getUserId() + " for completing survey");
     }
 
     // Helper method to convert entity to DTO

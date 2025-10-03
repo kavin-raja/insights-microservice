@@ -99,8 +99,10 @@ public class SurveyController {
             surveyService.completeSurvey(responseId);
             return new ResponseEntity<>(HttpStatus.OK);
         } catch (RuntimeException e) {
+            System.err.println("❌ Error completing survey: " + e.getMessage());
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         } catch (Exception e) {
+            System.err.println("❌ Unexpected error: " + e.getMessage());
             return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
